@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Alt Text Generator</title>
+    <script>
+        window.onload = () => {
+            parent.postMessage({ pluginMessage: { type: "generate-alt-text" } }, "*");
+        };
+
+        window.onmessage = async (event) => {
+            const msg = event.data.pluginMessage;
+
+            if (msg.type === "no-images") {
+                document.getElementById("status").innerText = "No images found in selection.";
+            } else if (msg.type === "images-found") {
+                const images = msg.images;
+                const imageList = document.getElementById("image-list");
+                imageList.innerHTML = "";
+
+                images.forEach((img) => {
+                    const listItem = document.createElement("div");
+                    listItem.innerHTML = `
+                        <p><strong>${img.name}</strong></p>
+                        <img src="${img.url}" width="100">
+                        <button onclick="generateAltText('${img.id}', '${img.url}')">Generate Alt Text</button>
+                        <p id="alt-text-${img.id}">Loading...</p>
+                    `;
+                    imageList.appendChild(listItem);
+                });
+            } else if (msg.type === "alt-text-set") {
+                document.getElementById(`alt-text-${msg.imageId}`).innerText = "Alt text added!";
+            }
+        };
+
+        async function generateAltText(imageId, imageUrl) {
+            const response = await fetch("https://api.example.com/generate-alt-text", {
+                method: "POST",
+                body: JSON.stringify({ imageUrl }),
+                headers: { "Content-Type": "application/json" }
+            });
+
+            const data = await response.json();
+            document.getElementById(`alt-text-${imageId}`).innerText = data.altText;
+
+            parent.postMessage({ pluginMessage: { type: "set-alt-text", imageId, altText: data.altText } }, "*");
+        }
+    </script>
+</head>
+<body>
+    <h2>Generate Alt Text</h2>
+    <p id="status">Scanning selection...</p>
+    <div id="image-list"></div>
+</body>
+</html>
