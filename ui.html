@@ -1,56 +1,265 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline';">
     <title>Alt Text Generator</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            margin: 0;
+            padding: 16px;
+            color: #333;
+            background: #fff;
+        }
+
+        .image-drop-zone {
+            border: 1px dashed #DADADA;
+            border-radius: 8px;
+            padding: 24px;
+            text-align: center;
+            margin-bottom: 16px;
+            cursor: pointer;
+        }
+
+        .image-drop-zone:hover {
+            background: #F5F5F5;
+        }
+
+        .upload-icon {
+            width: 24px;
+            height: 24px;
+            margin-bottom: 8px;
+            color: #333;
+        }
+
+        .drop-text {
+            font-size: 14px;
+            color: #333;
+            margin: 8px 0;
+        }
+
+        .sub-text {
+            font-size: 12px;
+            color: #666;
+        }
+
+        .browse-button {
+            background: transparent;
+            border: none;
+            color: #333;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            border: 1px solid #DADADA;
+            margin-top: 8px;
+        }
+
+        .style-options {
+            display: flex;
+            gap: 8px;
+            margin: 16px 0;
+        }
+
+        .style-option {
+            flex: 1;
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 1px solid #DADADA;
+            background: transparent;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: #333;
+        }
+
+        .style-option.selected {
+            background: #F0F7FF;
+            border-color: #18A0FB;
+            color: #18A0FB;
+        }
+
+        .style-option svg {
+            width: 16px;
+            height: 16px;
+        }
+
+        .generate-button {
+            background: #18A0FB;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 12px;
+            width: 100%;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .generate-button:disabled {
+            background: #CCCCCC;
+            cursor: not-allowed;
+        }
+
+        .footer {
+            text-align: center;
+            font-size: 12px;
+            color: #666;
+            margin-top: 24px;
+        }
+
+        .loading {
+            display: none;
+            align-items: center;
+            justify-content: center;
+            margin: 16px 0;
+        }
+
+        .caption {
+            background: #F5F5F5;
+            padding: 12px;
+            border-radius: 8px;
+            margin: 16px 0;
+            font-size: 14px;
+            display: none;
+        }
+
+        .error {
+            color: #FF3B30;
+            font-size: 14px;
+            margin: 8px 0;
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="image-drop-zone" id="dropZone">
+        <svg class="upload-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 4V20M12 4L6 10M12 4L18 10" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                stroke-linejoin="round" />
+        </svg>
+        <div class="drop-text">Drag & drop image here</div>
+        <div class="sub-text">or select from Figma</div>
+        <button class="browse-button">Browse Files</button>
+    </div>
+
+    <div class="caption-section">
+        <label>Caption Style</label>
+        <div class="style-options">
+            <button class="style-option selected" data-style="creative">
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 3L14.5 8.5L20 9.5L16 14L17 20L12 17L7 20L8 14L4 9.5L9.5 8.5L12 3Z"
+                        stroke="currentColor" fill="none" />
+                </svg>
+                Creative
+            </button>
+            <button class="style-option" data-style="professional">
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M4 6H20M4 12H20M4 18H20" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                </svg>
+                Pro
+            </button>
+            <button class="style-option" data-style="friendly">
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path
+                        d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z"
+                        stroke="currentColor" fill="none" />
+                    <path d="M8 14C8 14 9.5 16 12 16C14.5 16 16 14 16 14" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" />
+                </svg>
+                Friendly
+            </button>
+        </div>
+    </div>
+
+    <button id="generateBtn" class="generate-button">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 4V20M4 12H20" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </svg>
+        Generate Caption
+    </button>
+
+    <div id="status" class="loading">Generating caption...</div>
+    <div id="error" class="error"></div>
+    <div id="caption" class="caption"></div>
+
+    <div class="footer">Made for Figma designers</div>
+
     <script>
-        window.onload = () => {
-            parent.postMessage({ pluginMessage: { type: "generate-alt-text" } }, "*");
+        const generateBtn = document.getElementById('generateBtn');
+        const status = document.getElementById('status');
+        const error = document.getElementById('error');
+        const caption = document.getElementById('caption');
+        const styleOptions = document.querySelectorAll('.style-option');
+        let selectedStyle = 'creative';
+
+        styleOptions.forEach(option => {
+            option.addEventListener('click', () => {
+                styleOptions.forEach(opt => opt.classList.remove('selected'));
+                option.classList.add('selected');
+                selectedStyle = option.dataset.style;
+            });
+        });
+
+        function showError(message) {
+            error.textContent = message;
+            error.style.display = 'block';
+            status.style.display = 'none';
+            generateBtn.disabled = false;
+        }
+
+        function showLoading() {
+            status.style.display = 'flex';
+            error.style.display = 'none';
+            caption.style.display = 'none';
+            generateBtn.disabled = true;
+        }
+
+        function showCaption(text) {
+            caption.textContent = text;
+            caption.style.display = 'block';
+            status.style.display = 'none';
+            generateBtn.disabled = false;
+        }
+
+        generateBtn.onclick = () => {
+            parent.postMessage({
+                pluginMessage: {
+                    type: 'generate-alt-text',
+                    style: selectedStyle
+                }
+            }, '*');
         };
 
-        window.onmessage = async (event) => {
+        window.onmessage = (event) => {
             const msg = event.data.pluginMessage;
 
-            if (msg.type === "no-images") {
-                document.getElementById("status").innerText = "No images found in selection.";
-            } else if (msg.type === "images-found") {
-                const images = msg.images;
-                const imageList = document.getElementById("image-list");
-                imageList.innerHTML = "";
-
-                images.forEach((img) => {
-                    const listItem = document.createElement("div");
-                    listItem.innerHTML = `
-                        <p><strong>${img.name}</strong></p>
-                        <img src="${img.url}" width="100">
-                        <button onclick="generateAltText('${img.id}', '${img.url}')">Generate Alt Text</button>
-                        <p id="alt-text-${img.id}">Loading...</p>
-                    `;
-                    imageList.appendChild(listItem);
-                });
-            } else if (msg.type === "alt-text-set") {
-                document.getElementById(`alt-text-${msg.imageId}`).innerText = "Alt text added!";
+            switch (msg.type) {
+                case 'loading':
+                    showLoading();
+                    break;
+                case 'error':
+                    showError(msg.message);
+                    break;
+                case 'caption':
+                    showCaption(msg.caption);
+                    break;
+                default:
+                    console.error('Unknown message type:', msg.type);
             }
         };
-
-        async function generateAltText(imageId, imageUrl) {
-            const response = await fetch("https://api.example.com/generate-alt-text", {
-                method: "POST",
-                body: JSON.stringify({ imageUrl }),
-                headers: { "Content-Type": "application/json" }
-            });
-
-            const data = await response.json();
-            document.getElementById(`alt-text-${imageId}`).innerText = data.altText;
-
-            parent.postMessage({ pluginMessage: { type: "set-alt-text", imageId, altText: data.altText } }, "*");
-        }
     </script>
-</head>
-<body>
-    <h2>Generate Alt Text</h2>
-    <p id="status">Scanning selection...</p>
-    <div id="image-list"></div>
 </body>
+
 </html>
