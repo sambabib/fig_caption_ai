@@ -1,11 +1,18 @@
 {
   "compilerOptions": {
     "target": "es6",
-    "lib": ["es6"],
+    "module": "esnext",
+    "moduleResolution": "node",
+    "lib": ["es6", "dom"],
     "strict": true,
     "typeRoots": [
       "./node_modules/@types",
       "./node_modules/@figma"
-    ]
-  }
+    ],
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true
+  },
+  "include": ["*.ts"],
+  "exclude": ["node_modules"]
 }

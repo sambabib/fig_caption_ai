@@ -12,7 +12,12 @@
   "ui": "ui.html",
   "networkAccess": {
     "allowedDomains": [
-      "none"
-    ]
+      "https://your-production-domain.com",
+      "https://api-inference.huggingface.co"
+    ],
+    "devAllowedDomains": [
+      "http://localhost:5000"
+    ],
+    "reasoning": "The plugin needs to access Hugging Face's API for image caption generation and our backend server for processing requests and managing sessions."
   }
 }

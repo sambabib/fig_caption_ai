@@ -12,14 +12,13 @@ interface PluginMessage {
   style?: CaptionStyle;
 }
 
-const IS_DEVELOPMENT = false;
-const API_BASE = IS_DEVELOPMENT
-  ? 'http://localhost:5000'
-  : 'https://your-production-domain.com';
+// Environment and secrets are injected by webpack
+declare const PLUGIN_SECRET: string;
+declare const NODE_ENV: 'development' | 'production';
+declare const API_URL: string;
 
-const PLUGIN_SECRET = IS_DEVELOPMENT
-  ? 'dev-plugin-secret'
-  : 'prod-plugin-secret';
+// Use injected API_URL
+const API_BASE = API_URL;
 
 let sessionToken: string | null = null;
 
