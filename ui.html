@@ -59,36 +59,7 @@
             margin-top: 8px;
         }
 
-        .style-options {
-            display: flex;
-            gap: 8px;
-            margin: 16px 0;
-        }
 
-        .style-option {
-            flex: 1;
-            padding: 8px 12px;
-            border-radius: 8px;
-            border: 1px solid #DADADA;
-            background: transparent;
-            cursor: pointer;
-            font-size: 14px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            color: #333;
-        }
-
-        .style-option.selected {
-            background: #F0F7FF;
-            border-color: #18A0FB;
-            color: #18A0FB;
-        }
-
-        .style-option svg {
-            width: 16px;
-            height: 16px;
-        }
 
         .generate-button {
             background: #18A0FB;
@@ -154,34 +125,7 @@
         <button class="browse-button">Browse Files</button>
     </div>
 
-    <div class="caption-section">
-        <label>Caption Style</label>
-        <div class="style-options">
-            <button class="style-option selected" data-style="creative">
-                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M12 3L14.5 8.5L20 9.5L16 14L17 20L12 17L7 20L8 14L4 9.5L9.5 8.5L12 3Z"
-                        stroke="currentColor" fill="none" />
-                </svg>
-                Creative
-            </button>
-            <button class="style-option" data-style="professional">
-                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M4 6H20M4 12H20M4 18H20" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-                </svg>
-                Pro
-            </button>
-            <button class="style-option" data-style="friendly">
-                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path
-                        d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z"
-                        stroke="currentColor" fill="none" />
-                    <path d="M8 14C8 14 9.5 16 12 16C14.5 16 16 14 16 14" stroke="currentColor" stroke-width="2"
-                        stroke-linecap="round" />
-                </svg>
-                Friendly
-            </button>
-        </div>
-    </div>
+
 
     <button id="generateBtn" class="generate-button">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -201,16 +145,7 @@
         const status = document.getElementById('status');
         const error = document.getElementById('error');
         const caption = document.getElementById('caption');
-        const styleOptions = document.querySelectorAll('.style-option');
-        let selectedStyle = 'creative';
 
-        styleOptions.forEach(option => {
-            option.addEventListener('click', () => {
-                styleOptions.forEach(opt => opt.classList.remove('selected'));
-                option.classList.add('selected');
-                selectedStyle = option.dataset.style;
-            });
-        });
 
         function showError(message) {
             error.textContent = message;
@@ -236,8 +171,7 @@
         generateBtn.onclick = () => {
             parent.postMessage({
                 pluginMessage: {
-                    type: 'generate-alt-text',
-                    style: selectedStyle
+                    type: 'generate-alt-text'
                 }
             }, '*');
         };

@@ -2,19 +2,15 @@
 
 figma.showUI(__html__, { width: 300, height: 400 });
 
-type CaptionStyle = 'professional' | 'creative' | 'friendly';
-
 interface PluginMessage {
   type: 'generate-alt-text' | 'error' | 'caption' | 'loading';
   message?: string;
   caption?: string;
   imageId?: string;
-  style?: CaptionStyle;
 }
 
 // Environment and secrets are injected by webpack
 declare const PLUGIN_SECRET: string;
-declare const NODE_ENV: 'development' | 'production';
 declare const API_URL: string;
 
 // Use injected API_URL
@@ -86,14 +82,13 @@ async function fetchWithTimeout(resource: string, options: RequestInit = {}) {
   }
 }
 
-async function processImage(imageBytes: Uint8Array, style: CaptionStyle, retryCount = 0): Promise<string> {
+async function processImage(imageBytes: Uint8Array, retryCount = 0): Promise<string> {
   const MAX_RETRIES = 3;
 
   try {
     const formData = new FormData();
     const blob = new Blob([imageBytes], { type: 'image/png' });
     formData.append('image', blob);
-    formData.append('style', style);
 
     const response = await fetchWithTimeout(`${API_BASE}/generate-caption`, {
       method: 'POST',
@@ -113,7 +108,7 @@ async function processImage(imageBytes: Uint8Array, style: CaptionStyle, retryCo
   } catch (error) {
     if (retryCount < MAX_RETRIES) {
       await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
-      return processImage(imageBytes, style, retryCount + 1);
+      return processImage(imageBytes, retryCount + 1);
     }
     throw error;
   }
@@ -122,8 +117,6 @@ async function processImage(imageBytes: Uint8Array, style: CaptionStyle, retryCo
 figma.ui.onmessage = async (msg: PluginMessage) => {
   if (msg.type === "generate-alt-text") {
     const selection = figma.currentPage.selection;
-    const style = msg.style || 'professional'; // Default to professional if no style specified
-
     if (selection.length === 0 || selection[0].type !== "RECTANGLE") {
       figma.ui.postMessage({ type: "error", message: "Please select an image." });
       return;
@@ -154,11 +147,10 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       }
 
       const imageBytes = await image.getBytesAsync();
-      const caption = await processImage(imageBytes, style);
+      const caption = await processImage(imageBytes);
 
       // Set the description in Figma
       selectedNode.setSharedPluginData('altTextSalad', 'altText', caption);
-      selectedNode.setSharedPluginData('altTextSalad', 'style', style);
 
       figma.ui.postMessage({ type: "caption", caption });
     } catch (error) {

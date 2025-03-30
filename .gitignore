@@ -29,6 +29,7 @@ yarn-error.log*
 *.log.*
 venv
 .venv
+.windsurfrules
 
 out/
 code.js
