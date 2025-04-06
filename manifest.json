@@ -19,5 +19,12 @@
       "http://localhost:5000"
     ],
     "reasoning": "The plugin needs to access Hugging Face's API for image caption generation and our backend server for processing requests and managing sessions."
-  }
+  },
+  "menu": [
+    {
+      "name": "Generate caption for selected image",
+      "command": "generateCaption"
+    }
+  ],
+  "permissions": ["currentuser"]
 }

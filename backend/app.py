@@ -328,20 +328,12 @@ def generate_caption():
         if not check_global_rate_limit():
             logger.warning("Global Hugging Face API rate limit reached")
             return jsonify({"error": "Server is experiencing high load. Please try again later."}), 429
-        if "image" not in request.files:
-            return jsonify({"error": "No image file provided"}), 400
 
-        image_file = request.files["image"]
-        if not image_file or not allowed_file(image_file.filename):
-            return jsonify({"error": "Invalid or missing image file"}), 400
+        # Get raw image data from request body
+        image_data = request.get_data()
+        if not image_data:
+            return jsonify({"error": "No image data provided"}), 400
 
-        # Get style parameter
-        style = request.form.get('style', 'professional') # Default to 'professional'
-
-        # Read and validate image
-        image_data = image_file.read()
-        if len(image_data) == 0:
-             return jsonify({"error": "Empty image file"}), 400
         if len(image_data) > MAX_IMAGE_SIZE:
             return jsonify({"error": f"Image too large (max {MAX_IMAGE_SIZE // (1024*1024)}MB)"}), 400
 
@@ -353,59 +345,53 @@ def generate_caption():
             with Image.open(io.BytesIO(image_data)) as img:
                 logger.info(f"Received valid image: {img.format} format, {img.size} dimensions.")
         except (IOError, SyntaxError) as e:
-             logger.warning(f"Invalid image data received: {e}")
-             return jsonify({"error": "Invalid image file data"}), 400
-
-
-        # Send request to Hugging Face without style prompt
+            logger.warning(f"Invalid image data received: {e}")
+            return jsonify({"error": "Invalid image file data"}), 400
 
         # Prepare headers for Hugging Face API
-        headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
+        headers = {
+            "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
+            "Content-Type": "application/octet-stream"
+        }
 
         # Send request to Hugging Face
-        logger.info(f"Sending image to Hugging Face API with style '{style}'...")
+        logger.info("Sending image to Hugging Face API...")
         # Track this request
         HF_REQUEST_TIMESTAMPS.append(datetime.now(timezone.utc))
         
         hf_response = requests.post(
             HUGGINGFACE_API_URL,
             headers=headers,
-            data=image_data # Send raw image bytes
-            # Hugging Face BLIP doesn't typically use a 'prompt' param in the same way text models do.
-            # The model generates based on the image itself. We add the "style" post-generation if needed.
-            # params={"prompt": prompt} # Usually not needed for BLIP, comment out unless specified by model card
+            data=image_data
         )
-        hf_response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+        hf_response.raise_for_status()
 
         # Process Hugging Face response
         hf_data = hf_response.json()
         if isinstance(hf_data, list) and len(hf_data) > 0 and 'generated_text' in hf_data[0]:
             caption = hf_data[0]['generated_text']
-            # Optional: Prepend style prompt if desired for context, or just return raw caption
-            # caption = prompt + caption
             logger.info(f"Caption generated successfully.")
             return jsonify({"caption": caption.strip()}), 200
         else:
-             logger.error(f"Unexpected response format from Hugging Face: {hf_data}")
-             return jsonify({"error": "Failed to parse caption from AI service"}), 500
+            logger.error(f"Unexpected response format from Hugging Face: {hf_data}")
+            return jsonify({"error": "Failed to parse caption from AI service"}), 500
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Hugging Face API request error: {str(e)}")
-        # Check for specific status codes if needed (e.g., 401 Unauthorized, 503 Service Unavailable)
         error_detail = str(e)
         if e.response is not None:
-             error_detail = f"Status {e.response.status_code}: {e.response.text}"
-        return jsonify({"error": f"Failed to generate caption due to AI service error: {error_detail}"}), 502 # Bad Gateway
+            error_detail = f"Status {e.response.status_code}: {e.response.text}"
+        return jsonify({"error": f"Failed to generate caption due to AI service error: {error_detail}"}), 502
     except Exception as e:
-        logger.exception(f"Unexpected error in /generate-caption: {str(e)}") # Log full traceback
-        return jsonify(SERVER_ERROR), 500
+        logger.exception(f"Unexpected error in /generate-caption: {str(e)}")
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
 # --- Application Runner ---
 if __name__ == "__main__":
     # Run cleanup job once on startup (optional, consider moving to scheduler)
     # cleanup_expired_sessions()
 
-    port = int(os.getenv('PORT', 5002))
+    port = int(os.getenv('PORT', 5000))
     # Debug mode should be False in production
     debug_mode = (FLASK_ENV == 'development')
     logger.info(f"Starting Flask app on port {port} with debug mode: {debug_mode}")

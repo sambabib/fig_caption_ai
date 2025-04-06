@@ -38,6 +38,7 @@ module.exports = (env) => {
       new webpack.DefinePlugin({
         'NODE_ENV': JSON.stringify(isProduction ? 'production' : 'development'),
         'API_URL': JSON.stringify(process.env.API_URL),
+        'PLUGIN_SECRET': JSON.stringify(process.env.PLUGIN_SECRET),
         '__html__': JSON.stringify(fs.readFileSync('./ui.html', 'utf8'))
       }),
     ],
