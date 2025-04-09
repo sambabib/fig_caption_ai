@@ -11,6 +11,7 @@ import time # Not strictly used now, but good practice
 from functools import wraps
 from supabase import create_client, Client
 from datetime import datetime, timezone, timedelta
+from collections import deque
 
 # Configure logging first
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -25,7 +26,25 @@ load_dotenv(env_file)
 logger.info(f'Loaded environment: {FLASK_ENV} from {env_file}')
 
 app = Flask(__name__)
-CORS(app) # Consider restricting origins in production: CORS(app, origins=["your_figma_plugin_origin"])
+
+# Use Flask-CORS for proper CORS handling
+CORS(app, resources={
+    r"/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization", "X-Session-Token"],
+        "expose_headers": ["Content-Type", "Authorization", "X-Session-Token"],
+        "supports_credentials": True,
+        "max_age": 86400  # 24 hours
+    }
+})
+
+# Handle OPTIONS requests explicitly
+@app.route('/', defaults={'path': ''}, methods=['OPTIONS'])
+@app.route('/<path:path>', methods=['OPTIONS'])
+def options_handler(path):
+    response = jsonify({})
+    return response
 
 # Constants
 HUGGINGFACE_API_URL = "https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-base"
@@ -35,13 +54,13 @@ MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
 
 # Rate limiting configuration
-MAX_REQUESTS_PER_DAY = 10  # Per token/user limit
+MAX_REQUESTS_PER_DAY = 100  # Per token/user limit
 GLOBAL_HF_REQUESTS_PER_MIN = 60  # Global Hugging Face API limit
 SESSION_EXPIRY_HOURS = 24
 RENEWAL_THRESHOLD_HOURS = 1  # Renew session if less than 1 hour left
 
 # Global request tracking
-HF_REQUEST_TIMESTAMPS = []  # List to track timestamps of HF API requests
+HF_REQUEST_TIMESTAMPS = deque(maxlen=GLOBAL_HF_REQUESTS_PER_MIN)  # Use a deque to limit size
 
 # Error responses
 AUTH_ERROR = {"error": "Invalid authentication"}
@@ -368,13 +387,27 @@ def generate_caption():
 
         # Process Hugging Face response
         hf_data = hf_response.json()
-        if isinstance(hf_data, list) and len(hf_data) > 0 and 'generated_text' in hf_data[0]:
-            caption = hf_data[0]['generated_text']
+        logger.debug(f"Received Hugging Face response data: {hf_data}") # Log the raw response
+
+        # Check response format more carefully
+        caption = None
+        if isinstance(hf_data, list) and len(hf_data) > 0:
+            if isinstance(hf_data[0], dict) and 'generated_text' in hf_data[0]:
+                caption = hf_data[0]['generated_text']
+            else:
+                logger.warning(f"Unexpected item format in Hugging Face list response: {hf_data[0]}")
+        elif isinstance(hf_data, dict) and 'generated_text' in hf_data: # Handle if response is a dict
+             caption = hf_data['generated_text']
+        elif isinstance(hf_data, dict) and 'error' in hf_data: # Handle HF API error messages
+            logger.error(f"Hugging Face API returned an error: {hf_data['error']}")
+            return jsonify({"error": f"AI service error: {hf_data['error']}"}), 502
+
+        if caption:
             logger.info(f"Caption generated successfully.")
             return jsonify({"caption": caption.strip()}), 200
         else:
-            logger.error(f"Unexpected response format from Hugging Face: {hf_data}")
-            return jsonify({"error": "Failed to parse caption from AI service"}), 500
+            logger.error(f"Could not extract caption from Hugging Face response: {hf_data}")
+            return jsonify({"error": "Failed to parse caption from AI service response"}), 500
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Hugging Face API request error: {str(e)}")
