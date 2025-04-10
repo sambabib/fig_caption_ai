@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 import requests
 import os
@@ -27,24 +27,68 @@ logger.info(f'Loaded environment: {FLASK_ENV} from {env_file}')
 
 app = Flask(__name__)
 
-# Use Flask-CORS for proper CORS handling
-CORS(app, resources={
-    r"/*": {
-        "origins": "*",
-        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization", "X-Session-Token"],
-        "expose_headers": ["Content-Type", "Authorization", "X-Session-Token"],
-        "supports_credentials": True,
-        "max_age": 86400  # 24 hours
-    }
-})
+# Special handling for Figma plugin's null origin
+# Instead of using Flask-CORS, we'll manually set CORS headers for all responses
+@app.after_request
+def add_cors_headers(response):
+    # Get allowed origins from environment variable
+    allowed_origins = os.getenv("CORS_ALLOWED_ORIGINS", "null").split(",")
+    origin = request.headers.get('Origin', '')
 
-# Handle OPTIONS requests explicitly
+    # Set CORS headers - this applies to non-OPTIONS requests
+    origin_allowed = False
+    if origin == 'null' or origin in allowed_origins:
+        origin_allowed = True
+    else:
+        for allowed in allowed_origins:
+            if allowed == '*': # Handle wildcard if needed
+                origin_allowed = True
+                break
+
+    if origin_allowed:
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+
+    # Necessary headers, even if origin wasn't explicitly allowed?
+    # Let's add them conditionally for now
+    if origin_allowed:
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Session-Token'
+        response.headers['Access-Control-Max-Age'] = '86400'  # 24 hours
+
+    logger.debug(f"after_request CORS headers set for origin: {origin}")
+    return response
+
+# Handle OPTIONS requests explicitly and set preflight headers directly
 @app.route('/', defaults={'path': ''}, methods=['OPTIONS'])
 @app.route('/<path:path>', methods=['OPTIONS'])
 def options_handler(path):
-    response = jsonify({})
-    return response
+    # Explicitly create a response for OPTIONS requests
+    response = make_response() # Create an empty response
+    origin = request.headers.get('Origin', '')
+    allowed_origins = os.getenv("CORS_ALLOWED_ORIGINS", "null").split(",")
+
+    # Set CORS headers specifically for the preflight response
+    origin_allowed = False
+    if origin == 'null' or origin in allowed_origins:
+         origin_allowed = True
+    else:
+         for allowed in allowed_origins:
+             if allowed == '*': # Handle wildcard if needed
+                 origin_allowed = True
+                 break
+
+    if origin_allowed:
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        # Add other necessary CORS headers for preflight ONLY if origin allowed
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Session-Token'
+        response.headers['Access-Control-Max-Age'] = '86400' # 24 hours
+
+    logger.debug(f"OPTIONS request handled for origin: {origin}, setting preflight headers")
+    # Return 204 No Content for preflight
+    return response, 204
 
 # Constants
 HUGGINGFACE_API_URL = "https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-base"
@@ -54,7 +98,7 @@ MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
 
 # Rate limiting configuration
-MAX_REQUESTS_PER_DAY = 100  # Per token/user limit
+MAX_REQUESTS_PER_DAY = 10  # Per token/user limit
 GLOBAL_HF_REQUESTS_PER_MIN = 60  # Global Hugging Face API limit
 SESSION_EXPIRY_HOURS = 24
 RENEWAL_THRESHOLD_HOURS = 1  # Renew session if less than 1 hour left
@@ -88,11 +132,12 @@ except Exception as e:
 
 # Session configuration
 SESSION_EXPIRY_HOURS = 24  # Sessions expire after 24 hours
-RENEWAL_THRESHOLD_HOURS = 1 # Renew if less than 1 hour remaining
+# Session renewal disabled to enforce strict rate limits
+# RENEWAL_THRESHOLD_HOURS = 1 # Renew if less than 1 hour remaining
 CLEANUP_BATCH_SIZE = 100   # Number of expired sessions to delete in one batch (Consider background job)
 
 # Rate limiting configuration
-MAX_REQUESTS_PER_DAY = 100  # Limit requests per day (as defined in RPC call)
+MAX_REQUESTS_PER_DAY = 5  # Strict limit of 5 requests per day per user
 RATE_LIMIT_ERROR = {"error": f"Rate limit exceeded. Maximum {MAX_REQUESTS_PER_DAY} requests per day allowed."}
 SESSION_ERROR_INVALID = {"error": "Invalid or expired session"}
 SESSION_ERROR_MISSING = {"error": "No session token provided"}
@@ -102,16 +147,23 @@ RENEWAL_FAILED_ERROR = {"error": "Failed to renew session"}
 
 # --- Session Management Functions ---
 
-def create_session_token():
+def create_session_token(user_id: str):
     """Creates a new session token and stores it in Supabase."""
-    token = secrets.token_urlsafe(32)
+    # First, invalidate any existing active sessions for this user
     now = datetime.now(timezone.utc)
+    try:
+        supabase.table('sessions').update({'expiry': now.isoformat()}).eq('user_id', user_id).gte('expiry', now.isoformat()).execute()
+    except Exception as e:
+        logger.warning(f'Failed to invalidate existing sessions for user {user_id}: {str(e)}')
+
+    token = secrets.token_urlsafe(32)
     expiry = now + timedelta(hours=SESSION_EXPIRY_HOURS)
 
     try:
         # Insert new session. Initial count/reset time set by DB defaults or function.
         response = supabase.table('sessions').insert({
             'token': token,
+            'user_id': user_id,
             'created_at': now.isoformat(),
             'expiry': expiry.isoformat(),
             'last_used_at': now.isoformat(),
@@ -130,65 +182,78 @@ def create_session_token():
 
 def verify_session(token):
     """
-    Verifies session token using the Supabase RPC function for rate limiting.
-    Returns: True (valid), 'RATE_LIMITED', 'RENEW', False (invalid/expired/error)
+    Verifies session token and checks user-based rate limits.
+    Returns: 
+        - dict with {'status': status, 'session_data': data} for valid sessions
+        - string 'RATE_LIMITED' for rate-limited sessions
+        - False for invalid/expired/error sessions
     """
     if not token:
         return False
 
     now = datetime.now(timezone.utc)
     try:
-        # Call the database function
-        rpc_params = {
-            'session_token': token,
-            'max_requests': MAX_REQUESTS_PER_DAY,
-            'now_timestamp': now.isoformat() # Pass current time
-        }
-        # Note: Ensure 'increment_session_request_count' exactly matches the function name in SQL
-        result = supabase.rpc('increment_session_request_count', rpc_params).execute()
-
-        # Check Supabase client response structure (might vary slightly)
-        if not hasattr(result, 'data'):
-             logger.error(f"RPC call for token {token[:8]}... returned unexpected response structure: {result}")
-             return False # Treat unexpected structure as error
-
-        status = result.data
-        logger.info(f"RPC call for token {token[:8]}... status: {status}")
-
-        if status == 'OK':
-            # RPC handled rate limit OK. Now check if renewal is needed.
-            try:
-                # This adds one extra read ONLY on successful requests needing renewal check.
-                session_data = supabase.table('sessions').select('expiry').eq('token', token).maybe_single().execute()
-                # maybe_single() returns None if not found, doesn't raise error like single()
-
-                if session_data.data:
-                    expiry = datetime.fromisoformat(session_data.data['expiry'].replace('Z', '+00:00'))
-                    if expiry - now < timedelta(hours=RENEWAL_THRESHOLD_HOURS):
-                        logger.info(f"Token {token[:8]}... requires renewal.")
-                        return 'RENEW'
-                    return True # Valid, no renewal needed
-                else:
-                    # Session vanished between RPC call and expiry check (unlikely)
-                    logger.warning(f"Token {token[:8]}... passed RPC but not found for renewal check.")
-                    return False
-            except Exception as e:
-                 logger.error(f"Error checking renewal status for {token[:8]}...: {str(e)}")
-                 return False # Treat error during renewal check as failure
-
-        elif status == 'RATE_LIMITED':
-            return 'RATE_LIMITED'
-        elif status == 'EXPIRED':
-            # Consider triggering cleanup less frequently or via background task
-            # cleanup_expired_sessions()
-            logger.info(f"Token {token[:8]}... expired.")
+        # Get session data including user_id
+        session = supabase.table('sessions').select('*').eq('token', token).maybe_single().execute()
+        
+        if not session.data or now >= datetime.fromisoformat(session.data.get('expiry')):
+            logger.warning(f"Token {token[:8]}... invalid or expired")
             return False
-        elif status == 'NOT_FOUND':
-            logger.info(f"Token {token[:8]}... not found.")
+            
+        user_id = session.data.get('user_id')
+        if not user_id:
+            logger.warning(f"Token {token[:8]}... has no user_id")
             return False
-        else: # Handles 'ERROR' or unexpected status strings from RPC
-            logger.error(f"RPC call failed or returned unexpected status '{status}' for token {token[:8]}...")
-            return False
+
+        # Get or create user request data
+        user_requests = supabase.table('user_requests').select('*').eq('user_id', user_id).maybe_single().execute()
+        
+        if not user_requests.data:
+            # Create new user_requests record
+            user_requests = supabase.table('user_requests').insert({
+                'user_id': user_id,
+                'request_count': 1,
+                'last_reset': now.isoformat()
+            }).execute()
+            logger.info(f"Created new request tracking for user {user_id}")
+        else:
+            # Check if we need to reset count (it's past midnight UTC from last reset)
+            last_reset = datetime.fromisoformat(user_requests.data['last_reset'])
+            next_reset = (last_reset + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            if now >= next_reset:
+                # Reset count
+                user_requests = supabase.table('user_requests').update({
+                    'request_count': 1,
+                    'last_reset': now.isoformat()
+                }).eq('user_id', user_id).execute()
+                logger.info(f"Reset request count for user {user_id}")
+            elif user_requests.data['request_count'] >= MAX_REQUESTS_PER_DAY:
+                logger.warning(f"User {user_id} has hit rate limit")
+                return 'RATE_LIMITED'
+            else:
+                # Increment count
+                user_requests = supabase.table('user_requests').update({
+                    'request_count': user_requests.data['request_count'] + 1
+                }).eq('user_id', user_id).execute()
+                logger.info(f"Incremented request count for user {user_id}")
+        
+        # Calculate time until next reset
+        last_reset = datetime.fromisoformat(user_requests.data['last_reset'])
+        next_reset = (last_reset + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        time_until_reset = next_reset - now
+        
+        response = {'status': 'OK', 'session_data': session.data}
+        
+        # Only add warning when 1 request remaining
+        request_count = user_requests.data['request_count']
+        if request_count == MAX_REQUESTS_PER_DAY - 1:
+            hours = int(time_until_reset.total_seconds() // 3600)
+            minutes = int((time_until_reset.total_seconds() % 3600) // 60)
+            response['warning'] = f'You have 1 request left until {hours}h {minutes}m from now'
+        
+        logger.info(f"User {user_id} request count: {request_count}")
+        return response
 
     except Exception as e:
         # Handle exceptions during the RPC call itself or Supabase client issues
@@ -226,25 +291,23 @@ def require_session(f):
         if not token:
             return jsonify(SESSION_ERROR_MISSING), 401
 
-        # First check if the session exists and is valid
-        session_data = supabase.table('sessions').select('*').eq('token', token).maybe_single().execute()
-        if not session_data.data:
-            return jsonify(SESSION_ERROR_INVALID), 401
-
-        # Check rate limit before processing
+        # Check session validity and rate limit in one step
         verify_result = verify_session(token)
-        # Log the current request count
-        session_data = supabase.table('sessions').select('request_count').eq('token', token).maybe_single().execute()
-        if session_data.data:
-            logger.info(f"Current request count for session {token[:8]}: {session_data.data.get('request_count')}")
-
-        if verify_result == 'RATE_LIMITED':
+        
+        # Handle different verification results
+        if verify_result == False:
+            return jsonify(SESSION_ERROR_INVALID), 401
+        elif verify_result == 'RATE_LIMITED':
             return jsonify(RATE_LIMIT_ERROR), 429
-
-        # Handle renewal if needed
-        new_token = None
-        if verify_result == 'RENEW':
-            new_token = create_session_token()
+            
+        # For valid sessions, we now have the session data
+        session_data = verify_result.get('session_data', {})
+        # Log the current request count
+        if session_data:
+            logger.info(f"Current request count for session {token[:8]}: {session_data.get('request_count')}")
+            
+        # Session renewal is disabled to enforce strict rate limits
+        # No need to check for renewal status
 
         # Now run the actual request handler
         try:
@@ -269,24 +332,8 @@ def require_session(f):
             logger.error(f"Unexpected response type from wrapped function: {type(original_response)}")
             return jsonify(SERVER_ERROR), 500
 
-        # If we have a new token (from renewal), add it to response
-        if new_token:
-            current_data = response_data.get_json() if hasattr(response_data, 'get_json') else response_data
-            if isinstance(current_data, dict):
-                current_data['new_token'] = new_token
-                response_data = jsonify(current_data)
-            else:
-                response_data = jsonify({"data": current_data, "new_token": new_token})
-
-            # Delete the old session after successful renewal
-            try:
-                supabase.table('sessions').delete().eq('token', token).execute()
-                logger.info(f"Old session {token[:8]}... deleted after renewal.")
-            except Exception as e:
-                logger.error(f"Failed to delete old session {token[:8]}... during renewal: {str(e)}")
-                # Don't fail the request, but log the error.
-
-            return response_data, status_code
+        # Session renewal is disabled to enforce strict rate limits
+        # No token renewal logic needed
 
         # Return the response for non-renewal cases
         return response_data, status_code
@@ -309,16 +356,21 @@ def home():
 def authenticate():
     """Authenticates the plugin and returns a session token."""
     try:
-        # Verify plugin secret from JSON body
+        # Verify plugin secret and user ID from JSON body
         data = request.get_json()
         logger.info(f"Auth request received. Data: {data}")
-        logger.info(f"Expected secret: {PLUGIN_SECRET}, Received secret: {data.get('secret') if data else None}")
+        
         if not data or data.get('secret') != PLUGIN_SECRET:
             logger.warning("Authentication attempt failed: Invalid or missing secret.")
-            return jsonify(AUTH_ERROR), 401
+            return jsonify({"error": "Invalid secret"}), 401
 
-        # Create session token
-        token = create_session_token()
+        user_id = data.get('userId')
+        if not user_id:
+            logger.warning("Authentication attempt failed: Missing user ID")
+            return jsonify({"error": "User ID required"}), 400
+
+        # Create session token with user ID
+        token = create_session_token(user_id)
         return jsonify({"token": token}), 200
 
     except Exception as e:
