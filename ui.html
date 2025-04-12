@@ -58,7 +58,7 @@
             padding: 8px 16px;
             border-radius: 6px;
             cursor: pointer;
-            font-size: 14px;
+            font-size: 12px;
             border: 1px solid #DADADA;
             margin-top: 8px;
         }
@@ -72,7 +72,7 @@
             border-radius: 8px;
             padding: 12px;
             width: 100%;
-            font-size: 14px;
+            font-size: 12px;
             font-weight: 500;
             cursor: pointer;
             display: flex;
@@ -117,9 +117,55 @@
 
         .error {
             color: #FF3B30;
-            font-size: 14px;
+            font-size: 12px;
             margin: 8px 0;
             display: none;
+        }
+
+        .file-list {
+            margin-top: 16px;
+            border: 1px solid #DADADA;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .file-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            background: #F5F5F5;
+            border-bottom: 1px solid #DADADA;
+        }
+
+        .file-item:last-child {
+            border-bottom: none;
+        }
+
+        .file-name {
+            font-size: 12px;
+            color: #333;
+            flex: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-right: 8px;
+        }
+
+        .remove-file {
+            background: none;
+            border: none;
+            padding: 4px;
+            cursor: pointer;
+            color: #FF3B30;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+        }
+
+        .remove-file:hover {
+            background: rgba(255, 59, 48, 0.1);
         }
     </style>
 </head>
@@ -132,11 +178,13 @@
         </svg>
         <div class="drop-text">Drag & drop image here</div>
         <div class="sub-text">or select from Figma</div>
-        <input type="file" id="fileInput" accept="image/*" style="display: none;">
+        <input type="file" id="fileInput" accept="image/*" multiple style="display: none;">
         <button class="browse-button" id="browseButton">Browse Files</button>
     </div>
 
 
+
+    <div id="fileList" class="file-list" style="display: none;"></div>
 
     <button id="generateBtn" class="generate-button">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -159,10 +207,15 @@
         const fileInput = document.getElementById('fileInput');
         const browseButton = document.getElementById('browseButton');
         const dropZone = document.getElementById('dropZone');
+        const fileList = document.getElementById('fileList');
+
+        let selectedFiles = [];
 
 
         function showError(message) {
-            error.textContent = message;
+            // Log the error to console for debugging
+            console.error('Error:', message);
+            error.textContent = message || 'Unknown error occurred';
             error.style.display = 'block';
             status.style.display = 'none';
             generateBtn.disabled = false;
@@ -189,21 +242,20 @@
 
         // Handle file selection
         fileInput.addEventListener('change', (event) => {
-            const file = event.target.files[0];
-            if (file) {
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    const arrayBuffer = e.target.result;
-                    const uint8Array = new Uint8Array(arrayBuffer);
-                    parent.postMessage({
-                        pluginMessage: {
-                            type: 'upload-image',
-                            imageData: Array.from(uint8Array)
-                        }
-                    }, '*');
-                };
-                reader.readAsArrayBuffer(file);
+            const newFiles = Array.from(event.target.files || []);
+            if (selectedFiles.length + newFiles.length > 3) {
+                showError('Maximum 3 images allowed.');
+                return;
             }
+            
+            newFiles.forEach(file => {
+                if (file.type.startsWith('image/')) {
+                    selectedFiles.push(file);
+                    addFileToList(file);
+                }
+            });
+            
+            updateUI();
         });
 
         // Handle drag and drop
@@ -220,23 +272,25 @@
             e.preventDefault();
             dropZone.style.background = '';
             
-            const file = e.dataTransfer.files[0];
-            if (file && file.type.startsWith('image/')) {
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    const arrayBuffer = e.target.result;
-                    const uint8Array = new Uint8Array(arrayBuffer);
-                    parent.postMessage({
-                        pluginMessage: {
-                            type: 'upload-image',
-                            imageData: Array.from(uint8Array)
-                        }
-                    }, '*');
-                };
-                reader.readAsArrayBuffer(file);
-            } else {
-                showError('Please drop an image file.');
+            const newFiles = Array.from(e.dataTransfer.files);
+            const imageFiles = newFiles.filter(file => file.type.startsWith('image/'));
+            
+            if (imageFiles.length === 0) {
+                showError('Please drop image files.');
+                return;
             }
+            
+            if (selectedFiles.length + imageFiles.length > 3) {
+                showError('Maximum 3 images allowed.');
+                return;
+            }
+
+            imageFiles.forEach(file => {
+                selectedFiles.push(file);
+                addFileToList(file);
+            });
+            
+            updateUI();
         });
 
         generateBtn.onclick = () => {
@@ -247,7 +301,83 @@
             }, '*');
         };
 
-        window.onmessage = (event) => {
+        function addFileToList(file) {
+            const fileItem = document.createElement('div');
+            fileItem.className = 'file-item';
+            fileItem.innerHTML = `
+                <div class="file-name">${file.name}</div>
+                <button class="remove-file" aria-label="Remove ${file.name}">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M6 18L18 6M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                    </svg>
+                </button>
+            `;
+
+            const removeButton = fileItem.querySelector('.remove-file');
+            removeButton.onclick = () => {
+                const index = selectedFiles.indexOf(file);
+                if (index > -1) {
+                    selectedFiles.splice(index, 1);
+                    fileList.removeChild(fileItem);
+                    updateUI();
+                }
+            };
+
+            fileList.appendChild(fileItem);
+        }
+
+        function updateUI() {
+            if (selectedFiles.length > 0) {
+                fileList.style.display = 'block';
+                generateBtn.disabled = false;
+            } else {
+                fileList.style.display = 'none';
+                generateBtn.disabled = true;
+            }
+        }
+
+        function processSelectedFiles() {
+            if (selectedFiles.length === 0) {
+                showError('No files selected');
+                return;
+            }
+
+            showLoading();
+            Promise.all(selectedFiles.map(file => {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        resolve({
+                            type: 'upload-image',
+                            imageData: new Uint8Array(e.target.result),
+                            fileName: file.name
+                        });
+                    };
+                    reader.onerror = reject;
+                    reader.readAsArrayBuffer(file);
+                });
+            })).then(messages => {
+                parent.postMessage({
+                    pluginMessage: {
+                        type: 'upload-multiple-images',
+                        images: messages
+                    }
+                }, '*');
+                // Clear the file list after processing
+                selectedFiles = [];
+                fileList.innerHTML = '';
+                updateUI();
+            }).catch(error => {
+                showError('Error processing images');
+            });
+        }
+
+        generateBtn.onclick = () => {
+            generateBtn.disabled = true;
+            processSelectedFiles();
+        };
+
+        window.onmessage = async (event) => {
             const msg = event.data.pluginMessage;
 
             switch (msg.type) {
@@ -256,9 +386,55 @@
                     break;
                 case 'error':
                     showError(msg.message);
+                    // Reset file input to allow selecting the same file again
+                    fileInput.value = '';
+                    // Reset file list on error
+                    selectedFiles = [];
+                    fileList.innerHTML = '';
+                    updateUI();
                     break;
                 case 'caption':
                     showCaption(msg.caption);
+                    generateBtn.disabled = false;
+                    break;
+                case 'process-image':
+                    try {
+                        const formData = new FormData();
+                        formData.append('image', new Blob([new Uint8Array(msg.imageBytes)]));
+
+                        const response = await fetch(`${API_URL}/generate-caption`, {
+                            method: 'POST',
+                            headers: {
+                                'Authorization': `Bearer ${msg.token}`
+                            },
+                            body: formData
+                        });
+
+                        if (!response.ok) {
+                            const errorMessage = await response.text();
+                            parent.postMessage({ pluginMessage: { 
+                                type: 'process-image-result', 
+                                error: errorMessage 
+                            }}, '*');
+                            return;
+                        }
+
+                        const data = await response.json();
+                        parent.postMessage({ 
+                            pluginMessage: { 
+                                type: 'process-image-result',
+                                caption: data.caption,
+                                warning: data.warning
+                            } 
+                        }, '*');
+                    } catch (error) {
+                        parent.postMessage({ 
+                            pluginMessage: { 
+                                type: 'process-image-result', 
+                                error: error.message 
+                            } 
+                        }, '*');
+                    }
                     break;
                 default:
                     console.error('Unknown message type:', msg.type);

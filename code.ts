@@ -4,13 +4,29 @@
 figma.showUI(__html__, { width: 300, height: 400 });
 
 // Define message types for communication between UI and plugin
+interface ImageUpload {
+  type: 'upload-image';
+  imageData: Uint8Array;
+  fileName: string;
+}
+
 interface PluginMessage {
-  type: 'generate-alt-text' | 'error' | 'caption' | 'loading' | 'upload-image';
+  type: 'generate-alt-text' | 'error' | 'caption' | 'loading' | 'upload-image' | 'upload-multiple-images';
   message?: string;
   caption?: string;
   imageId?: string;
-  imageData?: number[];
+  imageData?: Uint8Array;
+  images?: ImageUpload[];
 }
+
+interface ProcessImageResult {
+  type: 'process-image-result';
+  error?: string;
+  caption?: string;
+  warning?: string;
+}
+
+const REQUEST_TIMEOUT_MS = 30000;
 
 // Environment and secrets are injected by webpack
 declare const PLUGIN_SECRET: string;
@@ -21,88 +37,120 @@ let sessionToken: string | null = null;
 async function getSessionToken(): Promise<string> {
   if (sessionToken) return sessionToken;
 
-  const response = await fetch(`${API_URL}/auth`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ secret: PLUGIN_SECRET })
-  });
+  // Debug log to see what URL and secret we're using
+  console.log('API_URL:', API_URL);
+  console.log('PLUGIN_SECRET:', PLUGIN_SECRET ? 'Secret exists' : 'Secret is undefined');
+  console.log('Authenticating with backend at:', `${API_URL}/auth`);
 
-  if (!response.ok) {
-    throw new Error('Failed to authenticate with backend');
-  }
-
-  const data = await response.json();
-  if (!data.token) {
-    throw new Error('No token received from server');
-  }
-  sessionToken = data.token;
-  return sessionToken as string;
-}
-
-async function fetchWithTimeout(resource: string, options: RequestInit = {}) {
-  const TIMEOUT = 30000;
-
-  const timeoutPromise = new Promise((_, reject) => {
-    setTimeout(() => reject(new Error('Request timeout')), TIMEOUT);
-  });
-
-  const fetchPromise = (async () => {
-    // Get session token before making request
-    const token = await getSessionToken();
-
-    const response: Response = await fetch(resource, {
-      ...options,
-      headers: {
-        ...options.headers,
-        'X-Session-Token': token
-      }
-    });
-
-    // If session expired, retry once with new token
-    if (response.status === 401) {
-      sessionToken = null; // Clear expired token
-      const newToken = await getSessionToken();
-      return fetch(resource, {
-        ...options,
-        headers: {
-          ...options.headers,
-          'X-Session-Token': newToken
-        }
-      });
+  try {
+    // Get the current user's ID from Figma
+    const userId = figma.currentUser?.id;
+    if (!userId) {
+      throw new Error('Could not get user ID');
     }
 
-    return response;
-  })();
+    // Create a hidden iframe with our proxy page
+    const proxyUrl = 'https://sambabib.github.io/fig-caption-ai-proxy/';
+    figma.showUI(
+      `<script>window.location.href = "${proxyUrl}";</script>`,
+      { visible: false, width: 1, height: 1 }
+    );
 
-  return Promise.race([fetchPromise, timeoutPromise]);
+    return new Promise((resolve, reject) => {
+      const messageHandler = (event: { data: { pluginMessage: { type: string; token?: string; error?: string } } }) => {
+        const msg = event.data.pluginMessage;
+        if (msg.type === 'auth-result') {
+          // Clean up the hidden iframe
+          figma.closePlugin();
+          
+          if (msg.error) {
+            reject(new Error(msg.error));
+          } else if (msg.token) {
+            sessionToken = msg.token;
+            resolve(sessionToken);
+          } else {
+            reject(new Error('No token received'));
+          }
+        }
+      };
+
+      // Listen for response from proxy
+      figma.ui.onmessage = messageHandler;
+
+      // Send auth request to proxy
+      figma.ui.postMessage({
+        type: 'auth',
+        apiUrl: API_URL,
+        secret: PLUGIN_SECRET,
+        userId: userId
+      });
+
+      // Add timeout
+      setTimeout(() => {
+        figma.closePlugin();
+        reject(new Error('Authentication request timed out'));
+      }, REQUEST_TIMEOUT_MS);
+    });
+  } catch (error) {
+    console.error('Authentication error:', error);
+    throw new Error(`Authentication error: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
+
+
 
 async function processImage(imageBytes: Uint8Array, retryCount = 0): Promise<string> {
   const MAX_RETRIES = 3;
 
   try {
+    console.log('Attempting to process image, size:', imageBytes.length, 'bytes');
     const token = await getSessionToken();
-    const response = await fetchWithTimeout(`${API_URL}/generate-caption`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/octet-stream',
-        'Authorization': `Bearer ${token}`
-      },
-      body: imageBytes
-    }) as Response;
+    console.log('Token obtained successfully:', token ? 'Yes' : 'No');
 
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
+    // Create a hidden iframe with our proxy page
+    const proxyUrl = 'https://sambabib.github.io/fig-caption-ai-proxy/';
+    figma.showUI(
+      `<script>window.location.href = "${proxyUrl}";</script>`,
+      { visible: false, width: 1, height: 1 }
+    );
 
-    const data = await response.json() as { caption?: string };
-    if (!data.caption) {
-      throw new Error('No caption in response');
-    }
+    return new Promise((resolve, reject) => {
+      const messageHandler = (event: { data: { pluginMessage: ProcessImageResult } }) => {
+        const msg = event.data.pluginMessage;
+        if (msg.type === 'process-image-result') {
+          // Clean up the hidden iframe
+          figma.closePlugin();
+          
+          if (msg.error) {
+            reject(new Error(msg.error));
+          } else if (msg.caption) {
+            if (msg.warning) {
+              figma.notify(msg.warning, { timeout: 10000 });
+            }
+            resolve(msg.caption);
+          } else {
+            reject(new Error('No caption received'));
+          }
+        }
+      };
 
-    return data.caption;
+      // Listen for response from proxy
+      figma.ui.onmessage = messageHandler;
+
+      // Send request to proxy
+      figma.ui.postMessage({
+        type: 'process-image',
+        imageBytes: Array.from(imageBytes),
+        token: token,
+        apiUrl: API_URL
+      });
+
+      // Add timeout
+      setTimeout(() => {
+        window.removeEventListener('message', messageHandler);
+        reject(new Error('Request timed out'));
+      }, REQUEST_TIMEOUT_MS);
+    });
   } catch (error) {
     if (retryCount < MAX_RETRIES) {
       await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
@@ -121,27 +169,16 @@ figma.on('run', ({ command }) => {
 
 // Create a text node with the caption below the image
 function createCaptionTextNode(imageNode: RectangleNode, caption: string): TextNode {
-  // Load a font first
+  // Create a text node below the image
   const textNode = figma.createText();
-  
-  // Position below the image
+
+  // Position the text node below the image
   textNode.x = imageNode.x;
-  textNode.y = imageNode.y + imageNode.height + 16; // 16px spacing
+  textNode.y = imageNode.y + imageNode.height + 10; // 10px spacing
   textNode.resize(imageNode.width, textNode.height);
   textNode.textAlignHorizontal = 'LEFT';
+  textNode.textAutoResize = 'HEIGHT';
   
-  // Set the text content once fonts are loaded
-  const loadFontAndSetText = async () => {
-    await figma.loadFontAsync({ family: "Inter", style: "Regular" });
-    textNode.characters = caption;
-    textNode.fontSize = 14;
-    textNode.fills = [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 } }];
-    
-    // Add a label to identify this as a caption
-    textNode.name = `Caption for ${imageNode.name || 'Image'}`;
-  };
-  
-  loadFontAndSetText();
   return textNode;
 }
 
@@ -243,12 +280,15 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       
       // Create a text node with the caption
       const textNode = createCaptionTextNode(selectedNode, caption);
-      figma.currentPage.appendChild(textNode);
       
-      // Group the image and caption together
-      const nodes = [selectedNode, textNode];
-      const group = figma.group(nodes, figma.currentPage);
-      group.name = 'Image with Caption';
+      // Load fonts and set text content
+      await figma.loadFontAsync({ family: "Inter", style: "Regular" });
+      textNode.fontName = { family: "Inter", style: "Regular" };
+      textNode.characters = caption;
+      textNode.fontSize = 14;
+      textNode.fills = [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 } }];
+      
+      figma.currentPage.appendChild(textNode);
 
       figma.ui.postMessage({ type: "caption", caption });
     } catch (error) {
@@ -257,48 +297,75 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
         message: error instanceof Error ? error.message : "Error processing image."
       });
     }
-  } else if (msg.type === "upload-image") {
-    if (!msg.imageData) {
-      figma.ui.postMessage({ type: "error", message: "No image data received." });
+  } else if (msg.type === "upload-multiple-images") {
+    if (!msg.images || msg.images.length === 0) {
+      figma.ui.postMessage({ type: "error", message: "No images received." });
+      return;
+    }
+
+    if (msg.images.length > 3) {
+      figma.ui.postMessage({ type: "error", message: "Maximum 3 images allowed." });
       return;
     }
 
     try {
       figma.ui.postMessage({ type: "loading" });
 
-      // Convert number array to Uint8Array
-      const bytes = Uint8Array.from(msg.imageData as number[]);
+      // Process all images in parallel
+      const processedGroups = await Promise.all(msg.images.map(async (imageUpload) => {
+        const bytes = imageUpload.imageData;
+        const caption = await processImage(bytes);
 
-      // Process the image
-      const caption = await processImage(bytes);
+        // Create a new image in Figma
+        const image = figma.createImage(bytes);
+        const node = figma.createRectangle();
+        const { width, height } = await image.getSizeAsync();
+        node.resize(width, height);
+        node.fills = [{ type: 'IMAGE', imageHash: image.hash, scaleMode: 'FILL' }];
+        node.setSharedPluginData('altTextSalad', 'altText', caption);
+        node.name = imageUpload.fileName || 'Uploaded Image';
 
-      // Create a new image in Figma
-      const image = figma.createImage(bytes);
-      const node = figma.createRectangle();
-      const { width, height } = await image.getSizeAsync();
-      node.resize(width, height);
-      node.fills = [{ type: 'IMAGE', imageHash: image.hash, scaleMode: 'FILL' }];
-      node.setSharedPluginData('altTextSalad', 'altText', caption);
-      node.name = 'Uploaded Image';
+        // Add to current page
+        figma.currentPage.appendChild(node);
+        
+        // Create a text node with the caption
+        const textNode = createCaptionTextNode(node, caption);
+        
+        // Load fonts and set text content
+        await figma.loadFontAsync({ family: "Inter", style: "Regular" });
+        textNode.fontName = { family: "Inter", style: "Regular" };
+        textNode.characters = caption;
+        textNode.fontSize = 14;
+        textNode.fills = [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 } }];
+        
+        figma.currentPage.appendChild(textNode);
+        
+        // Group the image and caption together for uploaded images
+        const group = figma.group([node, textNode], figma.currentPage);
+        group.name = `${node.name} with Caption`;
+        return group;
+      }));
 
-      // Add to current page
-      figma.currentPage.appendChild(node);
-      
-      // Create a text node with the caption
-      const textNode = createCaptionTextNode(node, caption);
-      figma.currentPage.appendChild(textNode);
-      
-      // Group the image and caption together
-      const nodes = [node, textNode];
-      const group = figma.group(nodes, figma.currentPage);
-      group.name = 'Uploaded Image with Caption';
-      
-      // Select the group
-      figma.currentPage.selection = [group];
+      // Arrange the groups horizontally
+      let xOffset = 0;
+      processedGroups.forEach((group: FrameNode | GroupNode, index: number) => {
+        if (index > 0) {
+          const prevGroup = processedGroups[index - 1];
+          xOffset = prevGroup.x + prevGroup.width + 20; // 20px spacing
+        }
+        group.x = xOffset;
+      });
 
-      // Send caption back to UI
-      figma.ui.postMessage({ type: "caption", caption });
+      // Select all groups
+      figma.currentPage.selection = processedGroups;
+
+      // Send success message back to UI
+      figma.ui.postMessage({ 
+        type: "caption", 
+        caption: `Successfully processed ${processedGroups.length} image${processedGroups.length > 1 ? 's' : ''}`
+      });
     } catch (error) {
+      console.error('Error processing images:', error);
       figma.ui.postMessage({
         type: "error",
         message: error instanceof Error ? error.message : "Error processing uploaded image."

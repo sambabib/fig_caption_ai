@@ -12,8 +12,9 @@
   "ui": "ui.html",
   "networkAccess": {
     "allowedDomains": [
-      "https://your-production-domain.com",
-      "https://api-inference.huggingface.co"
+      "https://sambabib.github.io",
+      "http://localhost:5000",
+      "https://api.your-production-domain.com"
     ],
     "devAllowedDomains": [
       "http://localhost:5000"
