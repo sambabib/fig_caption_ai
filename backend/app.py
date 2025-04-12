@@ -35,26 +35,22 @@ def add_cors_headers(response):
     allowed_origins = os.getenv("CORS_ALLOWED_ORIGINS", "null").split(",")
     origin = request.headers.get('Origin', '')
 
-    # Set CORS headers - this applies to non-OPTIONS requests
-    origin_allowed = False
-    if origin == 'null' or origin in allowed_origins:
-        origin_allowed = True
-    else:
-        for allowed in allowed_origins:
-            if allowed == '*': # Handle wildcard if needed
-                origin_allowed = True
-                break
-
-    if origin_allowed:
+    # Always allow preflight requests
+    if request.method == 'OPTIONS':
         response.headers['Access-Control-Allow-Origin'] = origin
-        response.headers['Access-Control-Allow-Credentials'] = 'true'
-
-    # Necessary headers, even if origin wasn't explicitly allowed?
-    # Let's add them conditionally for now
-    if origin_allowed:
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Session-Token'
         response.headers['Access-Control-Max-Age'] = '86400'  # 24 hours
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response
+
+    # For non-OPTIONS requests, check if origin is allowed
+    origin_allowed = origin == 'null' or origin in allowed_origins
+    if origin_allowed:
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Session-Token'
 
     logger.debug(f"after_request CORS headers set for origin: {origin}")
     return response
